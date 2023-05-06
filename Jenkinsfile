@@ -2,11 +2,17 @@ pipeline {
     agent any
     stages {
         stage('Build') {
+            tools {
+                maven 'Maven 3.6.3'
+            }
             steps {
                 sh 'mvn clean package'
             }
         }
         stage('Unit and Integration Tests') {
+            tools {
+                maven 'Maven 3.6.3'
+            }
             steps {
                 sh 'mvn test'
             }
@@ -20,29 +26,41 @@ pipeline {
         }
         stage('Security Scan') {
             steps {
-                withCredentials([string(credentialsId: 'ZAP_API_KEY', variable: 'ZAP_API_KEY')]) {
-                    sh 'zap-cli --api-key=${ZAP_API_KEY} -t https://myapp.com -r report.html -x report.xml -J report.json'
+                withCredentials([usernamePassword(credentialsId: 'Nessus Credentials', usernameVariable: 'NESSUS_USER', passwordVariable: 'NESSUS_PASSWORD')]) {
+                    sh 'nessus_scan.sh --target=${env.BUILD_URL}'
                 }
             }
         }
         stage('Deploy to Staging') {
+            environment {
+                STAGING_SERVER = 'ec2-user@staging-server'
+            }
             steps {
-                withAWS(credentials: 'aws-creds', region: 'us-west-2') {
-                    sh 'ansible-playbook deploy.yml'
+                sshagent(['Staging Server Key']) {
+                    sh 'ssh $STAGING_SERVER "cd /opt/myapp && git pull && mvn clean package && sudo systemctl restart myapp"'
                 }
             }
         }
         stage('Integration Tests on Staging') {
             steps {
-                sh 'mvn -Dtest.env=staging test'
+                sh 'run_integration_tests.sh http://staging-server:8080/myapp'
             }
         }
         stage('Deploy to Production') {
+            environment {
+                PRODUCTION_SERVER = 'ec2-user@production-server'
+            }
             steps {
-                withAWS(credentials: 'aws-creds', region: 'us-west-2') {
-                    sh 'ansible-playbook deploy.yml'
+                sshagent(['Production Server Key']) {
+                    sh 'ssh $PRODUCTION_SERVER "cd /opt/myapp && git pull && mvn clean package && sudo systemctl restart myapp"'
                 }
             }
         }
     }
+    post {
+        always {
+            emailext attachLog: true, body: "Pipeline status: ${currentBuild.result}", subject: "Pipeline Status", to: "youremail@example.com"
+        }
+    }
 }
+
